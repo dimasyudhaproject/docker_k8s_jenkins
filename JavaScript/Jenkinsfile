@@ -1,0 +1,46 @@
+pipeline {
+    agent any
+    environment {
+        APP_VERSION = sh (script: "cat ./package.json | grep -m 1 version | sed 's/[^0-9.]//g'", returnStdout: true).trim()
+        BRANCH_NAME = "${params.BRANCH_NAME}"
+        DOTENV = sh (script: "env | sed -n '/^[^\t]/s/=.*//p' | sed '/^\$/d' | sed 's/^/-e /g' | tr '\n' ' '", returnStdout: true).trim()
+        APP_NAME = 'dimasyudha'
+        REGISTRY_URL = 'registry.dimasyudha.com'
+        SERVER_IP = '146.42.133.62'
+        SERVER_PORT = '1818'
+        SERVER_USER = 'yudha'
+        SERVER_PASS = credentials('server-pass')
+    }
+    stages {
+        stage('Build') {
+            steps {
+                sh "docker build -f ./Dockerfile -t ${REGISTRY_URL}/${APP_NAME}-${BRANCH_NAME}:${APP_VERSION} ."
+            }
+        }
+        stage('Login') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'registry-cred', usernameVariable: 'REGISTRY_USER', passwordVariable: 'REGISTRY_PASS')]) {
+                    sh """
+                        docker login -u ${REGISTRY_USER} -p ${REGISTRY_PASS} ${REGISTRY_URL}
+                        sshpass -p ${SERVER_PASS} ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_IP} -p ${SERVER_PORT} docker login -u ${REGISTRY_USER} -p ${REGISTRY_PASS} ${REGISTRY_URL}
+                    """
+                }
+            }
+        }
+        stage('Push') {
+            steps {
+                sh "docker push ${REGISTRY_URL}/${APP_NAME}-${BRANCH_NAME}:${APP_VERSION}"
+            }
+        }
+        stage('Remove') {
+            steps {
+                sh "sshpass -p ${SERVER_PASS} ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_IP} -p ${SERVER_PORT} docker rm -f ${APP_NAME}"
+            }
+        }
+        stage('Run') {
+            steps {
+                sh "sshpass -p ${SERVER_PASS} ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_IP} -p ${SERVER_PORT} docker run ${DOTENV} -dit -p 3000:3000 --name ${APP_NAME} --pull=always --restart=always ${REGISTRY_URL}/${APP_NAME}-${BRANCH_NAME}:${APP_VERSION}"
+            }
+        }
+    }
+}
